@@ -192,7 +192,12 @@ $zipPath = $outDir + '.zip'
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
 }
-Compress-Archive -LiteralPath (Join-Path $outDir '*') `
+$archiveInputs = @(Get-ChildItem -LiteralPath $outDir -Force |
+    Select-Object -ExpandProperty FullName)
+if ($archiveInputs.Count -eq 0) {
+    throw "압축할 테스트 로그가 없습니다: $outDir"
+}
+Compress-Archive -LiteralPath $archiveInputs `
     -DestinationPath $zipPath -CompressionLevel Optimal
 
 Write-Host ''
