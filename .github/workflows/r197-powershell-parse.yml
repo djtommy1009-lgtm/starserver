@@ -1,0 +1,123 @@
+name: R197 PowerShell syntax
+
+on:
+  push:
+    branches:
+      - r197-auto-ranged-single-action
+    paths:
+      - 'tools/*.ps1'
+      - 'tools/*.cmd'
+      - 'R197_자동사냥_원거리_법사_단일행동_테스트안내.md'
+      - '.github/workflows/r197-powershell-parse.yml'
+  workflow_dispatch:
+
+jobs:
+  parse:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell files
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -LiteralPath tools -Filter '*.ps1' -File | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "::error file=$($_.FullName)::PowerShell syntax errors"
+              foreach ($errorItem in $errors) {
+                Write-Host ("  line {0}, column {1}: {2}" -f `
+                  $errorItem.Extent.StartLineNumber,
+                  $errorItem.Extent.StartColumnNumber,
+                  $errorItem.Message)
+              }
+            } else {
+              Write-Host "PASS $($_.Name)"
+            }
+          }
+
+          if ($failed) {
+            exit 1
+          }
+
+      - name: Verify R197 safety tokens
+        shell: pwsh
+        run: |
+          $build = Get-Content -LiteralPath 'tools/R197_자동사냥_원거리단일행동_빌드.ps1' -Raw
+          $apply = Get-Content -LiteralPath 'tools/R197_테스트서버_후보JAR_적용.ps1' -Raw
+          $rollback = Get-Content -LiteralPath 'tools/R197_테스트서버_원복.ps1' -Raw
+
+          $requiredBuild = @(
+            'sourceAuthorityMatch',
+            'productionJarModified=NO',
+            'AUTO_RANGED_SINGLE_ACTION_VERSION',
+            'handoffDeadAutoTarget',
+            'isAutoSingleActionTargetReady',
+            'settleDeadAutoTargetAfterAttack',
+            'toUseElfTripleArrow(target)',
+            'toWizardAttackSkill(target)'
+          )
+          foreach ($token in $requiredBuild) {
+            if (-not $build.Contains($token)) {
+              throw "Build safety token missing: $token"
+            }
+          }
+
+          foreach ($text in @($apply, $rollback)) {
+            if (-not $text.Contains('productionJarModified=NO')) {
+              throw 'Production protection token missing.'
+            }
+            if (-not $text.Contains('[System.IO.File]::Replace')) {
+              throw 'Atomic JAR replacement token missing.'
+            }
+          }
+
+          Write-Host 'R197 safety token audit PASS'
+
+      - name: Prepare validated package
+        shell: pwsh
+        run: |
+          $package = Join-Path $PWD 'R197_테스트수정_패키지'
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+
+          $files = @(
+            'tools/1_R197_후보JAR_빌드.cmd',
+            'tools/2_R197_테스트서버_적용.cmd',
+            'tools/3_R197_테스트서버_원복.cmd',
+            'tools/4_R197_테스트로그_수집.cmd',
+            'tools/R197_자동사냥_원거리단일행동_빌드.ps1',
+            'tools/R197_테스트서버_후보JAR_적용.ps1',
+            'tools/R197_테스트서버_원복.ps1',
+            'tools/R197_테스트로그_수집.ps1',
+            'R197_자동사냥_원거리_법사_단일행동_테스트안내.md'
+          )
+
+          foreach ($file in $files) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Package source missing: $file"
+            }
+            Copy-Item -LiteralPath $file -Destination $package -Force
+          }
+
+          Get-ChildItem -LiteralPath $package -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+              "$hash  $($_.Name)"
+            } | Set-Content -LiteralPath (Join-Path $package 'SHA256SUMS.txt') -Encoding UTF8
+
+      - name: Upload validated package
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarServer_R197_AutoRanged_TestPatch
+          path: R197_테스트수정_패키지
+          if-no-files-found: error
+          retention-days: 30
